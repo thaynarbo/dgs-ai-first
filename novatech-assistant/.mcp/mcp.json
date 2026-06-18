@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "filesystem-workdir": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.1.14",
+               "./src", "./specs", "./skills"]
+    },
+    "filesystem-sources": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.1.14",
+               "./docs/novatech", "./data/retrieval-corpus"]
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git==2026.6.4", "--repository", "."]
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory@2026.1.26"]
+    }
+  }
+}
