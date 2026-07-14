@@ -7,7 +7,7 @@ import { expectedAnswer } from '../fixtures/expected-responses.js';
 // T-10 — Mock Azure clients; no real network calls
 vi.mock('../../src/services/completion.js', () => ({
   generateEmbedding: vi.fn(),
-  generateCompletion: vi.fn(),
+  generateStructuredCompletion: vi.fn(),
 }));
 
 vi.mock('../../src/services/search.js', () => ({
@@ -19,14 +19,14 @@ vi.mock('../../src/services/prompt-builder.js', () => ({
 }));
 
 // Import after vi.mock so the mocked versions are used
-import { generateEmbedding, generateCompletion } from '../../src/services/completion.js';
+import { generateEmbedding, generateStructuredCompletion } from '../../src/services/completion.js';
 import { searchChunks } from '../../src/services/search.js';
 import { buildPrompt } from '../../src/services/prompt-builder.js';
 
 const mockEmbedding = vi.mocked(generateEmbedding);
 const mockSearchChunks = vi.mocked(searchChunks);
 const mockBuildPrompt = vi.mocked(buildPrompt);
-const mockGenerateCompletion = vi.mocked(generateCompletion);
+const mockGenerateCompletion = vi.mocked(generateStructuredCompletion);
 
 function makeRequest(body: unknown): Request {
   return new Request('http://localhost/api/query', {
@@ -74,23 +74,92 @@ describe('queryHandler — T-10', () => {
     expect(mockGenerateCompletion).not.toHaveBeenCalled();
   });
 
-  it('retorna 200 com answer e source_documents no fluxo completo feliz', async () => {
+  it('retorna 200 com structured output validado no fluxo completo feliz', async () => {
     mockEmbedding.mockResolvedValue([0.1, 0.2]);
     mockSearchChunks.mockResolvedValue(sampleChunks);
     mockBuildPrompt.mockResolvedValue('prompt montado');
-    mockGenerateCompletion.mockResolvedValue(expectedAnswer);
+    mockGenerateCompletion.mockResolvedValue({
+      answer: expectedAnswer,
+      source_document: 'POL-001',
+      confidence_score: 0.92,
+    });
 
     const res = await queryHandler(makeRequest({ question: validQuestion }));
 
     expect(res.status).toBe(200);
-    const body = await res.json() as { answer: string; source_documents: { title: string; chunk_id: string }[] };
+    const body = await res.json() as {
+      answer: string;
+      source_document: string;
+      confidence_score: number;
+      source_documents: { title: string; chunk_id: string }[];
+    };
     expect(body.answer).toBe(expectedAnswer);
+    expect(body.source_document).toBe('POL-001');
+    expect(body.confidence_score).toBe(0.92);
     expect(body.source_documents).toHaveLength(sampleChunks.length);
     const firstChunk = sampleChunks[0];
     expect(body.source_documents[0]).toMatchObject({
       title: firstChunk?.title,
       chunk_id: firstChunk?.chunk_id,
     });
+  });
+
+  it('harness bloqueia resposta sem source_document e devolve resposta padrão segura', async () => {
+    mockEmbedding.mockResolvedValue([0.1, 0.2]);
+    mockSearchChunks.mockResolvedValue(sampleChunks);
+    mockBuildPrompt.mockResolvedValue('prompt montado');
+    // Structured output inválido: falta source_document
+    mockGenerateCompletion.mockResolvedValue({
+      answer: 'Resposta sem citar a fonte.',
+      confidence_score: 0.8,
+    });
+
+    const res = await queryHandler(makeRequest({ question: validQuestion }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { answer: string; source_document: string; confidence_score: number };
+    // Não devolve a resposta do modelo — devolve a padrão segura
+    expect(body.answer).not.toContain('sem citar a fonte');
+    expect(body.source_document).toBe('N/A');
+    expect(body.confidence_score).toBe(0);
+  });
+
+  it('guardrail 2 bloqueia afirmação de devolução de carga perigosa (plural/conjugação)', async () => {
+    mockEmbedding.mockResolvedValue([0.1, 0.2]);
+    mockSearchChunks.mockResolvedValue(sampleChunks);
+    mockBuildPrompt.mockResolvedValue('prompt montado');
+    // Caso fail-open que o regex ingênuo deixava passar: plural + "devolvidas"
+    mockGenerateCompletion.mockResolvedValue({
+      answer: 'Sim, cargas perigosas podem ser devolvidas normalmente em até 7 dias.',
+      source_document: 'POL-001',
+      confidence_score: 0.7,
+    });
+
+    const res = await queryHandler(makeRequest({ question: validQuestion }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { answer: string; confidence_score: number };
+    expect(body.answer).not.toContain('podem ser devolvidas');
+    expect(body.confidence_score).toBe(0);
+  });
+
+  it('guardrail 2 NÃO bloqueia resposta correta com a negativa', async () => {
+    mockEmbedding.mockResolvedValue([0.1, 0.2]);
+    mockSearchChunks.mockResolvedValue(sampleChunks);
+    mockBuildPrompt.mockResolvedValue('prompt montado');
+    mockGenerateCompletion.mockResolvedValue({
+      answer:
+        'Cargas perigosas classes 1 a 6 não são elegíveis para devolução pelo processo padrão. Procure a Gestão de Riscos (ramal 4500).',
+      source_document: 'POL-001',
+      confidence_score: 0.9,
+    });
+
+    const res = await queryHandler(makeRequest({ question: validQuestion }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { answer: string; confidence_score: number };
+    expect(body.answer).toContain('não são elegíveis');
+    expect(body.confidence_score).toBe(0.9);
   });
 
   it('retorna 500 quando Azure OpenAI lança erro após retries', async () => {

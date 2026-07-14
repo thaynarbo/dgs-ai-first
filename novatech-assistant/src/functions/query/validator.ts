@@ -17,6 +17,10 @@ export const SourceDocumentSchema = z.object({
 
 export const QueryOutputSchema = z.object({
   answer: z.string().nullable(),
+  // Fonte única citada e confiança, provenientes do structured output validado.
+  source_document: z.string().optional(),
+  confidence_score: z.number().min(0).max(1).optional(),
+  // Chunks recuperados pelo retrieval, para rastreabilidade.
   source_documents: z.array(SourceDocumentSchema),
 });
 

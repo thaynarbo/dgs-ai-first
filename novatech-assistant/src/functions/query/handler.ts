@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { QueryInputSchema, QueryOutputSchema } from './validator.js';
-import { generateEmbedding, generateCompletion } from '../../services/completion.js';
+import { generateEmbedding, generateStructuredCompletion } from '../../services/completion.js';
 import { searchChunks } from '../../services/search.js';
 import { buildPrompt } from '../../services/prompt-builder.js';
+import { validateResponse } from '../../services/response-validator.js';
 import { logger } from '../../shared/logger.js';
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -48,10 +49,17 @@ export async function queryHandler(request: Request): Promise<Response> {
     }
 
     const prompt = await buildPrompt(chunks, question);
-    const answer = await generateCompletion(prompt);
+
+    // Structured output + harness determinístico: o LLM devolve JSON, e
+    // validateResponse aplica schema + guardrails ANTES de responder.
+    // Respostas inválidas são substituídas pela resposta padrão segura.
+    const rawCompletion = await generateStructuredCompletion(prompt);
+    const validated = validateResponse(rawCompletion);
 
     const output = QueryOutputSchema.parse({
-      answer,
+      answer: validated.answer,
+      source_document: validated.source_document,
+      confidence_score: validated.confidence_score,
       source_documents: chunks.map((c) => ({ title: c.title, chunk_id: c.chunk_id })),
     });
 

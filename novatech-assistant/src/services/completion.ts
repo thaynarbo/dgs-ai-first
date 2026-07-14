@@ -111,3 +111,50 @@ export async function generateCompletion(prompt: string): Promise<string> {
 
   return answer;
 }
+
+// Instrução que força o modelo a devolver o structured output validável.
+const STRUCTURED_OUTPUT_INSTRUCTION =
+  'Responda EXCLUSIVAMENTE em JSON válido, sem texto fora do JSON, com exatamente estes campos: ' +
+  '"answer" (string com a resposta), ' +
+  '"source_document" (string com o identificador do documento fonte, ex.: "POL-001"), ' +
+  '"confidence_score" (número entre 0 e 1). Não inclua nenhum outro campo.';
+
+// Envia o prompt pedindo structured output e retorna o JSON já parseado (unknown).
+// O parse/validação de FORMATO fica a cargo de validateResponse (determinístico).
+export async function generateStructuredCompletion(prompt: string): Promise<unknown> {
+  const response = await withOpenAIRetry(() =>
+    completionClient.chat.completions.create({
+      model: config.openai.deploymentName,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: STRUCTURED_OUTPUT_INSTRUCTION },
+        { role: 'user', content: prompt },
+      ],
+    }),
+  );
+
+  const content = response.choices[0]?.message?.content;
+
+  if (!content) {
+    throw new OpenAICompletionError('Azure OpenAI returned empty completion');
+  }
+
+  logger.info({
+    prompt_tokens: response.usage?.prompt_tokens,
+    completion_tokens: response.usage?.completion_tokens,
+    model: response.model,
+    msg: 'Structured completion generated',
+  });
+
+  try {
+    return JSON.parse(content) as unknown;
+  } catch {
+    // Modelo não devolveu JSON válido — retorna o texto cru; validateResponse
+    // rejeitará (não bate no schema) e devolverá a resposta padrão segura.
+    logger.warn({
+      reason: 'structured_completion_not_json',
+      msg: 'Model did not return valid JSON',
+    });
+    return content;
+  }
+}
